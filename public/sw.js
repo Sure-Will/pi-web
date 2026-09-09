@@ -1,10 +1,12 @@
 const CACHE_PREFIX = "pi-web";
 const CACHE_VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
-const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;
+// Refresh cached icons even when the application version stays the same.
+const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}-pi-badge-1`;
 const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
   "/manifest.webmanifest",
+  "/icons/pi.svg",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",

@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Script } from "node:vm";
 import ts from "typescript";
+import { createJiti } from "jiti";
+const {resolveThinkingPreference} = await createJiti(import.meta.url).import("../lib/thinking-level-preference.ts");
 
 const source = ts.createSourceFile(
   "useAgentSession.ts",
@@ -25,6 +27,10 @@ const retry = effect.arguments[0].body.statements.find(ts.isExpressionStatement)
 function script(text) {
   return new Script(ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText);
 }
+const applyThinking = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(source) === "applyNewSessionThinking");
+const applyScript = script(`(${applyThinking.initializer.arguments[0].getText(source)})`);
+const changeThinking = nodes.find((node) => ts.isVariableDeclaration(node) && node.name.getText(source) === "handleThinkingLevelChange");
+const changeScript = script(`(${changeThinking.initializer.arguments[0].getText(source)})`);
 const loadScript = script(`(${loader.initializer.arguments[0].getText(source)})`);
 const retryScript = script(retry.getText(source));
 
@@ -36,6 +42,10 @@ function setup(fetchImpl) {
     controller: new AbortController(),
     newSessionCwd: "/project", session: null, isNew: true,
     sessionIdRef: { current: null }, thinkingLevelOverrideRef: { current: null },
+    modelsInitializationRef: {current:null},
+    modelsResponseRef: {current:null}, newSessionModelOverrideRef:{current:null},
+    explicitThinkingSelectionRef:{current:null}, ensuringNewSessionRef:{current:null},
+    preferred:null, resolveThinkingPreference,
     fetch: fetchImpl,
     MODELS_RETRY_DELAYS_MS: script(schedule.initializer.getText(source)).runInNewContext(),
     delay: async (ms) => { delays.push(ms); },
@@ -43,6 +53,10 @@ function setup(fetchImpl) {
   for (const name of ["ModelError", "ModelNames", "ModelScopeWarnings", "ModelThinkingLevels", "ModelThinkingLevelMaps", "ModelList", "NewSessionDefaultModel", "ThinkingLevel"]) {
     context[`set${name}`] = (value) => writes.push([name, value]);
   }
+  context.getPreferredThinkingLevel = () => context.preferred;
+  context.setPreferredThinkingLevel = value => {context.preferred=value;};
+  context.applyNewSessionThinking = applyScript.runInNewContext(context);
+  context.changeThinking = changeScript.runInNewContext(context);
   context.loadModels = loadScript.runInNewContext(context);
   return { context, writes, delays, run: () => retryScript.runInNewContext(context) };
 }
@@ -113,4 +127,50 @@ test("cancelling model loads prevents state writes and further retries", async (
   waiting.context.delay = async () => waiting.context.controller.abort();
   await waiting.run();
   assert.equal(attempts, 1);
+});
+
+const modelData={models:{"openai-codex:gpt-6-astra":"Astra"}, modelList:[{provider:"openai-codex",id:"gpt-6-astra"}],defaultModel:{provider:"openai-codex",modelId:"gpt-6-astra"},thinkingLevels:{"openai-codex:gpt-6-astra":["low","high","max"]},thinkingLevelDefaults:{"openai-codex:gpt-6-astra":"high"}};
+test("fresh composer shows stored Pi high, and a selection survives a new composer before sending", async()=>{
+  const a=setup(async()=>Response.json(modelData)); await a.run();
+  assert.ok(a.writes.some(([key,val])=>key==="ThinkingLevel" && val==="high"));
+  assert.equal(a.context.thinkingLevelOverrideRef.current,null);
+  await a.context.changeThinking("high");
+  const b=setup(async()=>Response.json(modelData)); b.context.preferred=a.context.preferred; await b.run();
+  assert.equal(b.context.thinkingLevelOverrideRef.current,"high");
+  await b.context.changeThinking("auto"); await b.run();
+  assert.equal(b.writes.filter(([k])=>k==="ThinkingLevel").at(-1)[1],"auto");
+  assert.equal(b.context.thinkingLevelOverrideRef.current,null);
+});
+test("late model data respects a new explicit selection and existing session state",async()=>{
+  const pending=Promise.withResolvers();
+  const a=setup(async()=>{await pending.promise; return Response.json(modelData)});
+  const run=a.run(); await a.context.changeThinking("max"); pending.resolve(); await run;
+  assert.equal(a.context.thinkingLevelOverrideRef.current,"max");
+  for(const oldLevel of ["low","off"]) {
+    const b=setup(async()=>Response.json(modelData)); b.context.isNew=false; b.context.sessionIdRef.current="existing"; b.context.preferred="high";
+    b.context.setThinkingLevel(oldLevel); await b.run();
+    assert.deepEqual(b.writes.filter(([k])=>k==="ThinkingLevel"),[["ThinkingLevel",oldLevel]]);
+  }
+});
+test("a selected new-session model controls compatibility even when model loading finishes late",async()=>{
+  const a=setup(async()=>Response.json({...modelData,thinkingLevels:{...modelData.thinkingLevels,"other:small":["off"]},thinkingLevelDefaults:{"other:small":"off"}}));
+  a.context.preferred="high"; a.context.newSessionModelOverrideRef.current={provider:"other",modelId:"small"}; await a.run();
+  assert.equal(a.writes.filter(([k])=>k==="ThinkingLevel").at(-1)[1],"off");
+  assert.equal(a.context.thinkingLevelOverrideRef.current,null); assert.equal(a.context.preferred,"high");
+});
+
+test("quick session creation waits for model capabilities and remembered thinking",async()=>{
+  const pending=Promise.withResolvers(); const posted=[];
+  const a=setup(async(url,options)=>{
+    if(url==="/api/agent/new") {posted.push(JSON.parse(options.body)); return Response.json({sessionId:"new-session",thinkingLevel:"low"});}
+    await pending.promise; return Response.json(modelData);
+  });
+  a.context.preferred="low"; a.context.toolPreset="default";
+  a.context.getToolNamesForPreset=()=>[]; a.context.setPendingModel=()=>{};
+  const ensure=nodes.find(node=>ts.isVariableDeclaration(node)&&node.name.getText(source)==="ensureNewSession");
+  const create=script(`(${ensure.initializer.arguments[0].getText(source)})`).runInNewContext(a.context);
+  const loading=a.run(); const creating=create();
+  await Promise.resolve(); assert.equal(posted.length,0);
+  pending.resolve(); await loading; assert.equal(await creating,"new-session");
+  assert.equal(posted.length,1); assert.equal(posted[0].thinkingLevel,"low");
 });

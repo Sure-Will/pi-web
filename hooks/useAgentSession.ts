@@ -16,6 +16,7 @@ import { normalizeToolCalls } from "@/lib/normalize";
 import { isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
+import { getPreferredThinkingLevel, setPreferredThinkingLevel, resolveThinkingPreference, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
 import { getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
@@ -159,7 +160,7 @@ export interface UseAgentSessionOptions {
   deferInitialScroll?: boolean;
 }
 
-export type ThinkingLevelOption = "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type { ThinkingLevelOption } from "@/lib/thinking-level-preference";
 
 const PROMPT_SETTLE_INITIAL_DELAY_MS = 800;
 const PROMPT_SETTLE_POLL_MS = 600;
@@ -263,6 +264,7 @@ type ModelsResponse = {
   thinkingLevels?: Record<string, string[]>;
   thinkingLevelMaps?: Record<string, Record<string, string | null>>;
   thinkingLevelPins?: Record<string, string>;
+  thinkingLevelDefaults?: Record<string, string>;
   modelError?: string;
   modelScopeWarnings?: string[];
 };
@@ -349,6 +351,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionPromotedRef = useRef(false);
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const thinkingLevelOverrideRef = useRef<Exclude<ThinkingLevelOption, "auto"> | null>(null);
+  const explicitThinkingSelectionRef = useRef<ThinkingLevelOption | null>(null);
+  const modelsResponseRef = useRef<ModelsResponse | null>(null);
+  const modelsInitializationRef = useRef<Promise<void> | null>(null);
   const promptRunIdRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
   const modelSwitchPendingRef = useRef(false);
@@ -487,7 +492,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setToolPresetState(d.toolNames !== undefined ? getPresetFromToolNames(d.toolNames) : "default");
       setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);
       setError(null);
-      if (d.context.thinkingLevel && d.context.thinkingLevel !== "off") {
+      if (d.context.thinkingLevel) {
         setThinkingLevel(d.context.thinkingLevel as ThinkingLevelOption);
       }
 
@@ -610,6 +615,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (ensuringNewSessionRef.current) return ensuringNewSessionRef.current;
 
     const promise = (async () => {
+      // A quick send/panel open must not race ahead of remembered preferences.
+      if (!modelsResponseRef.current) await modelsInitializationRef.current;
+      const preferred = getPreferredThinkingLevel();
+      if (!modelsResponseRef.current && preferred && preferred !== "auto") {
+        throw new Error("Models are still unavailable. Retry after the model list loads.");
+      }
       // Only send explicit user overrides. The server resolves the current
       // enabledModels scope atomically with AgentSession construction.
       const selectedModel = newSessionModelOverrideRef.current;
@@ -1491,12 +1502,28 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [loadContext]);
 
+  const applyNewSessionThinking = useCallback((model: SelectedModel | null, models: ModelsResponse) => {
+    const key = model ? `${model.provider}:${model.modelId}` : "";
+    const resolved = resolveThinkingPreference({
+      explicit: explicitThinkingSelectionRef.current,
+      preferred: getPreferredThinkingLevel(),
+      supported: models.thinkingLevels?.[key],
+      pinned: model ? models.thinkingLevelPins?.[`${model.provider}/${model.modelId}`] : undefined,
+      defaultLevel: models.thinkingLevelDefaults?.[key],
+    });
+    thinkingLevelOverrideRef.current = resolved.override;
+    setThinkingLevel(resolved.level);
+  }, []);
+
   const handleModelChange = useCallback(async (provider: string, modelId: string) => {
     if (isNew) {
       const selectedModel = { provider, modelId };
       newSessionModelOverrideRef.current = selectedModel;
       setNewSessionModel(selectedModel);
       setPendingModel(selectedModel);
+      if (!sessionIdRef.current && modelsResponseRef.current) {
+        applyNewSessionThinking(selectedModel, modelsResponseRef.current);
+      }
       const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
       if (!sid) return;
       try {
@@ -1534,7 +1561,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       modelSwitchPendingRef.current = false;
       setModelSwitching(false);
     }
-  }, [addNotice, currentModelOverride, isNew, loadSession, setNewSessionModel]);
+  }, [addNotice, applyNewSessionThinking, currentModelOverride, isNew, loadSession, setNewSessionModel]);
 
   const handleCompact = useCallback(async () => {
     const sid = sessionIdRef.current;
@@ -1581,6 +1608,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       throw e;
     }
+    modelsResponseRef.current = d;
     setModelNames(d.models);
     setModelError(d.modelError ?? null);
     setModelScopeWarnings(d.modelScopeWarnings ?? []);
@@ -1594,14 +1622,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ? nextModelList.find((m) => m.id === d.defaultModel?.modelId && m.provider === d.defaultModel?.provider)
         : undefined;
       setNewSessionDefaultModel(displayModel ? { provider: displayModel.provider, modelId: displayModel.id } : null);
-      // An `enabledModels` pattern may pin a thinking level (`anthropic/*:high`).
-      // Like pi, apply it to the model a new session starts with.
-      const pinned = displayModel && d.thinkingLevelPins?.[`${displayModel.provider}/${displayModel.id}`];
-      if (thinkingLevelOverrideRef.current === null) {
-        setThinkingLevel((pinned as ThinkingLevelOption | undefined) ?? "auto");
-      }
+      applyNewSessionThinking(newSessionModelOverrideRef.current ?? (
+        displayModel ? { provider: displayModel.provider, modelId: displayModel.id } : null
+      ), d);
     }
-  }, [isNew, newSessionCwd, session?.cwd]);
+  }, [applyNewSessionThinking, isNew, newSessionCwd, session?.cwd]);
 
   const handleBuiltinSlashCommand = useCallback(async (text: string): Promise<BuiltinSlashCommandResult> => {
     if (!text.startsWith("/")) return { handled: false };
@@ -1784,6 +1809,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [opts.chatInputRef, addNotice]);
 
   const handleThinkingLevelChange = useCallback(async (level: ThinkingLevelOption) => {
+    setPreferredThinkingLevel(level);
+    explicitThinkingSelectionRef.current = level;
     setThinkingLevel(level);
     if (isNew && !sessionIdRef.current) {
       thinkingLevelOverrideRef.current = level === "auto" ? null : level;
@@ -1996,7 +2023,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Load the model list with bounded retries; loadModels exposes each failure.
   useEffect(() => {
     const controller = new AbortController();
-    (async () => {
+    modelsInitializationRef.current = (async () => {
       for (let attempt = 0; ; attempt++) {
         try {
           await loadModels(controller.signal);

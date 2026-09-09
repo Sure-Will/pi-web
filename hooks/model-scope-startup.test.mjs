@@ -44,7 +44,7 @@ test("model-list refresh does not overwrite a live session or explicit thinking 
   assert.match(loadModelsSource, /if \(isNew && !sessionIdRef\.current\)/);
   assert.match(
     loadModelsSource,
-    /thinkingLevelOverrideRef\.current === null/,
+    /applyNewSessionThinking\(newSessionModelOverrideRef\.current/,
   );
-  assert.match(loadModelsSource, /setThinkingLevel\(\(pinned[\s\S]*\?\? "auto"\)/);
+  assert.match(loadModelsSource, /displayModel \? \{ provider: displayModel.provider, modelId: displayModel.id \} : null/);
 });

@@ -1,7 +1,7 @@
 import { stat } from "fs/promises";
 import { resolve } from "path";
 import { createAgentSessionServices, getAgentDir, type SettingsManager } from "@earendil-works/pi-coding-agent";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   loadModelsWithCache,
   withModelRuntimeError,
@@ -30,6 +30,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
   let modelList: { id: string; name: string; provider: string }[] = [];
   let defaultModel: { provider: string; modelId: string } | null = null;
   const thinkingLevels: Record<string, string[]> = {};
+  const thinkingLevelDefaults: Record<string, string> = {};
   const thinkingLevelMaps: Record<string, Record<string, string | null>> = {};
 
   const agentDir = getAgentDir();
@@ -61,6 +62,8 @@ async function loadModels(cwd: string): Promise<ModelsData> {
     const key = `${m.provider}:${m.id}`;
     nameMap.set(key, m.name);
     thinkingLevels[key] = getSupportedThinkingLevels(m);
+    const storedLevel = settings.getModelThinkingLevel(m.provider, m.id) ?? settings.getDefaultThinkingLevel();
+    if (storedLevel) thinkingLevelDefaults[key] = clampThinkingLevel(m, storedLevel);
     if (m.thinkingLevelMap) thinkingLevelMaps[key] = m.thinkingLevelMap;
   }
 
@@ -83,6 +86,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
       thinkingLevels,
       thinkingLevelMaps,
       thinkingLevelPins,
+      thinkingLevelDefaults,
       ...(warnings.length > 0 ? { modelScopeWarnings: warnings } : {}),
     },
     modelError,
