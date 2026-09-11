@@ -28,7 +28,9 @@ import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { AgentsConfig } from "./AgentsConfig";
 import { PluginsConfig } from "./PluginsConfig";
+import { ConfigSyncSettings } from "./ConfigSyncSettings";
 import { ConfigButton, ConfigSwitch } from "./SettingsUi";
+import { CONFIG_SYNC_APPLIED_EVENT } from "@/lib/config-sync-browser";
 
 interface Props {
   cwd: string | null;
@@ -79,6 +81,12 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
       .then((response) => response.ok ? response.json() : null)
       .then((data: { enabled?: boolean } | null) => setWebAuthEnabled(data?.enabled === true))
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const readThinkingExpanded = () => setThinkingExpanded(isThinkingExpandedByDefault());
+    window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, readThinkingExpanded);
+    return () => window.removeEventListener(CONFIG_SYNC_APPLIED_EVENT, readThinkingExpanded);
   }, []);
 
   const logOut = async () => {
@@ -284,6 +292,8 @@ function GeneralSettings({ sessionId, onSessionReloaded, quoteSelectionEnabled, 
           })}
         </div>
       </section>
+
+      <ConfigSyncSettings />
 
       {webAuthEnabled && (
         <section className="settings-general-section">

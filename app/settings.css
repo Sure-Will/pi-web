@@ -1115,6 +1115,144 @@
   font-size: 12px;
 }
 
+.settings-config-sync {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 520px;
+  min-width: 0;
+}
+
+.settings-config-sync-scope,
+.settings-config-sync-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-config-sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.settings-config-sync-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.settings-config-sync-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.settings-config-sync-input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-config-sync-input:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.settings-config-sync-help {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-config-sync-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 5px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.settings-config-sync-row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-config-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-config-sync-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.settings-config-sync-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-config-sync-status-row time {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-config-sync-conflicts {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.settings-config-sync-conflicts strong {
+  font-weight: 600;
+}
+
+.settings-config-sync-conflicts ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .settings-general-error {
   margin: 8px 0 0;
   color: #ef4444;
@@ -1175,6 +1313,17 @@
     background: var(--bg-panel);
     color: var(--text);
     font-size: 16px;
+  }
+
+  .settings-config-sync-row {
+    align-items: flex-start;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .settings-config-sync-status-row {
+    flex-direction: column;
+    gap: 2px;
   }
 }
 

@@ -323,7 +323,7 @@ test("keeps one reducer-owned assistant partial and consumes Pi JSON deltas", ()
   assert.match(connectedSource, /dispatch\(\{ type: "end" \}\)/);
   assert.match(connectedSource, /event\.isStreaming === true/);
   assert.match(connectedSource, /agentRunningRef\.current = true/);
-  assert.match(streamSource, /msg\?\.role === "assistant"[\s\S]*dispatch\(\{ type: "snapshot", message: msg \}\)/);
+  assert.match(streamSource, /msg\?\.role === "assistant"[\s\S]*dispatch\(\{ type: "snapshot", message: withMessageThinking\(msg, sentThinkingLevelRef\.current\) \}\)/);
   assert.match(streamSource, /event\.assistantMessageEvent as ClientAssistantMessageEvent/);
   assert.match(streamSource, /dispatch\(\{ type: "delta", event: delta \}\)/);
   assert.match(streamSource, /delta\.type !== "toolcall_start" && delta\.type !== "toolcall_delta"/);

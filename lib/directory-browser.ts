@@ -38,10 +38,15 @@ export async function listWindowsDrives(): Promise<BrowsableDirectory[]> {
   return candidates.filter((drive): drive is BrowsableDirectory => drive !== null);
 }
 
-export function normalizeDirectory(directory: string): string {
-  if (directory === "~") return homedir();
-  if (directory.startsWith("~/")) return path.resolve(homedir(), directory.slice(2));
+function normalizeDirectoryWithHome(directory: string, homeDirectory: string): string {
+  if (directory === "~") return homeDirectory;
+  if (directory.startsWith("~/")) return path.resolve(homeDirectory, directory.slice(2));
   return path.resolve(directory);
+}
+
+export function normalizeDirectory(directory: string): string {
+  // Keep runtime paths opaque to Next's static deployment-asset tracer.
+  return normalizeDirectoryWithHome(directory, homedir());
 }
 
 export function getParentDirectory(directory: string): string | null {

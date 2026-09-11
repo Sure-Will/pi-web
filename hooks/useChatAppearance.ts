@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { CONFIG_SYNC_APPLIED_EVENT } from "../lib/config-sync-browser";
 
 export const CHAT_CONTENT_WIDTH_DEFAULT = 820;
 export const CHAT_CONTENT_WIDTH_MIN = 820;
@@ -63,7 +64,16 @@ function getSnapshot(): ChatAppearance {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  const refresh = () => {
+    appearance = null;
+    getSnapshot();
+    listener();
+  };
+  window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, refresh);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener(CONFIG_SYNC_APPLIED_EVENT, refresh);
+  };
 }
 
 function setPreference(key: keyof ChatAppearance, value: number): void {

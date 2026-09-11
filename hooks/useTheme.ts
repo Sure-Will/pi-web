@@ -2,6 +2,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import { isDarkTheme, isThemePreference, type ThemePreference, type ResolvedTheme } from "@/lib/theme";
+import { CONFIG_SYNC_APPLIED_EVENT } from "../lib/config-sync-browser";
 
 export type { ThemePreference, ResolvedTheme } from "@/lib/theme";
 
@@ -84,6 +85,10 @@ function ensureSystemListener(): void {
   if (systemListening || typeof window === "undefined" || !window.matchMedia) return;
 
   const mql = window.matchMedia("(prefers-color-scheme: dark)");
+  window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, () => {
+    const preference = readStoredPreference();
+    setThemeState(preference, resolveTheme(preference), false);
+  });
   mql.addEventListener("change", syncAutoThemeFromSystem);
   // Some browsers delay or miss scheme events while backgrounded.
   window.addEventListener("focus", syncAutoThemeFromSystem);

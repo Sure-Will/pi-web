@@ -18,6 +18,8 @@ import { AgentSessionPanel } from "./AgentSessionPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { newTerminalTab, restoreTerminalTabs, TERMINAL_TABS_KEY, type TerminalTab } from "./terminal-tab-state";
 import { useTheme } from "@/hooks/useTheme";
+import { useConfigSync } from "@/hooks/useConfigSync";
+import { CONFIG_SYNC_APPLIED_EVENT } from "@/lib/config-sync-browser";
 import { THEME_OPTIONS } from "@/lib/theme";
 import { ThemeIcon } from "./ThemeIcon";
 import { useI18n } from "@/hooks/useI18n";
@@ -79,6 +81,7 @@ function parkedNewSessionDraftKey(cwd: string): string {
 }
 
 export function AppShell() {
+  useConfigSync();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [initialNavigation] = useState(() => getInitialNavigation(searchParams));
@@ -103,11 +106,13 @@ export function AppShell() {
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio, soundEnabledRef } = useAudio();
   const [quoteSelectionEnabled, setQuoteSelectionEnabled] = useState(false);
   useEffect(() => {
-    try {
-      setQuoteSelectionEnabled(localStorage.getItem("pi-quote-selection-enabled") === "true");
-    } catch {
-      // Browser storage is best-effort.
-    }
+    const read = () => {
+      try { setQuoteSelectionEnabled(localStorage.getItem("pi-quote-selection-enabled") === "true"); }
+      catch { /* Browser storage is best-effort. */ }
+    };
+    read();
+    window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, read);
+    return () => window.removeEventListener(CONFIG_SYNC_APPLIED_EVENT, read);
   }, []);
   const handleQuoteSelectionChange = useCallback((enabled: boolean) => {
     setQuoteSelectionEnabled(enabled);

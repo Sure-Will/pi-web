@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { CONFIG_SYNC_APPLIED_EVENT } from "../lib/config-sync-browser";
 
 function playTone(ctx: AudioContext) {
   const now = ctx.currentTime;
@@ -30,6 +31,17 @@ export function useAudio() {
 
   const enabledRef = useRef(enabled);
   useEffect(() => { enabledRef.current = enabled; }, [enabled]);
+  useEffect(() => {
+    const read = () => {
+      try {
+        const next = localStorage.getItem("pi-sound-enabled") !== "false";
+        enabledRef.current = next;
+        setEnabled(next);
+      } catch { /* Keep the current value when storage is blocked. */ }
+    };
+    window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, read);
+    return () => window.removeEventListener(CONFIG_SYNC_APPLIED_EVENT, read);
+  }, []);
 
   // Reuse a single AudioContext so it can be resumed if the browser
   // autoplay policy suspends it (contexts created outside user gestures

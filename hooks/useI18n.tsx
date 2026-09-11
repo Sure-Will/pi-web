@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { getLocalePlugin, getSupportedLocales, resolveBrowserLocale } from "@/lib/i18n/registry";
 import { translateMessage } from "@/lib/i18n/format";
 import type { Locale, LocalePlugin, TranslationParams } from "@/lib/i18n/types";
+import { CONFIG_SYNC_APPLIED_EVENT } from "../lib/config-sync-browser";
 
 const LOCALE_STORAGE_KEY = "pi-locale";
 const defaultLocale: Locale = "en";
@@ -49,10 +50,15 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const messages = useMemo(() => getMessages(), []);
 
   useEffect(() => {
-    const next = readInitialLocale();
-    setLocaleState(next);
-    document.documentElement.lang = next;
+    const read = () => {
+      const next = readInitialLocale();
+      setLocaleState(next);
+      document.documentElement.lang = next;
+    };
+    read();
     setHydrated(true);
+    window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, read);
+    return () => window.removeEventListener(CONFIG_SYNC_APPLIED_EVENT, read);
   }, []);
 
   const setLocale = useCallback((next: Locale) => {

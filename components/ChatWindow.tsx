@@ -10,6 +10,8 @@ import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantB
 import { extractTurnWrittenFiles, type WrittenFile } from "@/lib/turn-written-files";
 import { buildQuotedSelection } from "@/lib/quoted-selection";
 import { MessageView } from "./MessageView";
+import { TurnDuration } from "./TurnDuration";
+import type { TurnTiming } from "@/lib/turn-timing";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
@@ -193,12 +195,12 @@ function withAssistantBlocks(
   return next;
 }
 
-function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
+function ProcessDetailsGroup({ messageCount, toolCallCount, timing, defaultExpanded = false, reveal = false, children, t }: { messageCount: number; toolCallCount: number; timing?: TurnTiming; defaultExpanded?: boolean; reveal?: boolean; children: ReactNode; t: (key: string, params?: Record<string, string | number>) => string }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   useLayoutEffect(() => {
     if (reveal) setExpanded(true);
   }, [reveal]);
-  const parts = [t("chat.processDetails"), `${messageCount} ${t(messageCount === 1 ? "chat.message" : "chat.messages")}`];
+  const parts = [`${messageCount} ${t(messageCount === 1 ? "chat.message" : "chat.messages")}`];
   if (toolCallCount > 0) parts.push(`${toolCallCount} ${t(toolCallCount === 1 ? "chat.toolCall" : "chat.toolCalls")}`);
 
   return (
@@ -212,6 +214,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
           alignItems: "center",
           gap: 8,
           width: "auto",
+          maxWidth: "100%",
           minHeight: 24,
           padding: "2px 0",
           border: "none",
@@ -227,7 +230,9 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
           <polyline points="4 2.5 7.5 6 4 9.5" />
         </svg>
         <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {parts.join(" · ")}
+          {t("chat.processDetails")}
+          {timing && <> · <TurnDuration timing={timing} /></>}
+          {` · ${parts.join(" · ")}`}
         </span>
       </button>
       {(expanded || reveal) && (
@@ -273,7 +278,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
   const [restoreAnchorReady, setRestoreAnchorReady] = useState(false);
 
   const {
-    loading, error, messages, entryIds, historyCursor, hasEarlierMessages, streamState,
+    loading, error, messages, entryIds, historyCursor, hasEarlierMessages, streamState, turnTiming, turnTimings,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -296,6 +301,13 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     deferInitialScroll: Boolean(pendingScrollRestore),
   });
   const sessionBusy = agentRunning || bashRunning;
+  const timingsByEntry = useMemo(() => {
+    const timings = new Map<string, TurnTiming>();
+    for (const timing of [...turnTimings, ...(turnTiming?.endedAt !== undefined ? [turnTiming] : [])]) {
+      if (timing.anchorEntryId && timing.endedAt !== undefined) timings.set(timing.anchorEntryId, timing);
+    }
+    return timings;
+  }, [turnTimings, turnTiming]);
   const [quotedSelection, setQuotedSelection] = useState<{
     text: string;
     top: number;
@@ -1085,19 +1097,32 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 while (endIdx < messages.length && !isMessageGroupAnchor(messages[endIdx])) endIdx += 1;
 
                 const finalAssistantIdx = findFinalAssistantIndex(messages, userIdx, endIdx);
+                const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
+                let timing: TurnTiming | undefined;
+                for (let timingIdx = endIdx - 1; timingIdx >= userIdx; timingIdx--) {
+                  timing = timingsByEntry.get(entryIds[timingIdx]);
+                  if (timing) break;
+                }
+                if (isLiveTail && turnTiming?.endedAt === undefined) timing = turnTiming ?? undefined;
+                const timingRow = timing ? (
+                  <div key={`turn-timing-${timing.id}`} style={{ color: "var(--text-muted)", fontSize: 12, minHeight: 24, padding: "2px 0", marginBottom: 14 }}>
+                    <TurnDuration timing={timing} live={isLiveTail} />
+                  </div>
+                ) : null;
 
                 if (finalAssistantIdx === -1) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
                     rendered.push(renderMessage(renderIdx));
+                    if (renderIdx === userIdx) rendered.push(timingRow);
                   }
                   idx = endIdx;
                   continue;
                 }
 
-                const isLiveTail = (sessionBusy || streamState.isStreaming) && endIdx === messages.length && userIdx === lastAnchorIdx;
                 if (isLiveTail) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
                     rendered.push(renderMessage(renderIdx));
+                    if (renderIdx === userIdx) rendered.push(timingRow);
                   }
                   idx = endIdx;
                   continue;
@@ -1150,12 +1175,14 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                       key={`process-group-${entryIds[userIdx] ?? userIdx}`}
                       ref={processRefIdx === undefined ? undefined : (el) => { messageRefs.current[processRefIdx] = el; }}
                     >
-                      <ProcessDetailsGroup messageCount={processViews.length} toolCallCount={processToolCount} defaultExpanded={!finalAnswerMessage} reveal={revealProcess} t={t}>
+                      <ProcessDetailsGroup messageCount={processViews.length} toolCallCount={processToolCount} timing={timing} defaultExpanded={!finalAnswerMessage} reveal={revealProcess} t={t}>
                         {processViews}
                       </ProcessDetailsGroup>
                     </div>,
                   );
                 }
+
+                if (processViews.length === 0) rendered.push(timingRow);
 
                 if (finalAnswerMessage) {
                   // Each tool call is stored as its own assistant entry, so the

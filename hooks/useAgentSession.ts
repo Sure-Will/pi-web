@@ -16,6 +16,7 @@ import { normalizeToolCalls } from "@/lib/normalize";
 import { isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
+import { CONFIG_SYNC_APPLIED_EVENT } from "@/lib/config-sync-browser";
 import { getPreferredThinkingLevel, setPreferredThinkingLevel, resolveThinkingPreference, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
 import { getPresetFromToolNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -23,6 +24,8 @@ import { mergeSessionStats, type SessionFileStats } from "@/lib/session-stats";
 import { userMessageKey } from "@/lib/prompt-recovery";
 import { AgentEventConnection } from "@/lib/agent-event-connection";
 import { getToolExecutionProgress } from "@/lib/tool-execution-progress";
+import { mergeTurnTiming, type TurnTiming } from "@/lib/turn-timing";
+import { withMessageThinking } from "@/lib/message-thinking";
 import {
   CHAT_SCROLL_REATTACH_TOLERANCE,
   CHAT_SCROLL_TAIL_TOLERANCE,
@@ -42,6 +45,7 @@ export interface SessionData {
   leafId: string | null;
   toolNames?: string[];
   context: {
+    turnTimings?: TurnTiming[];
     messages: AgentMessage[];
     entryIds: string[];
     oldestEntryId: string | null;
@@ -68,6 +72,7 @@ interface LastAssistantTextResponse {
 }
 
 type AgentStateResponse = {
+  turnTiming?: TurnTiming | null;
   contextUsage?: { percent: number | null; contextWindow: number; tokens: number | null } | null;
   systemPrompt?: string;
   thinkingLevel?: string;
@@ -282,6 +287,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const isNew = session === null && newSessionCwd !== null;
 
   const [data, setData] = useState<SessionData | null>(null);
+  const [turnTiming, setTurnTiming] = useState<TurnTiming | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string | null>(null);
   const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
@@ -351,8 +357,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionPromotedRef = useRef(false);
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const thinkingLevelOverrideRef = useRef<Exclude<ThinkingLevelOption, "auto"> | null>(null);
+  const sentThinkingLevelRef = useRef<string | undefined>(undefined);
   const explicitThinkingSelectionRef = useRef<ThinkingLevelOption | null>(null);
   const modelsResponseRef = useRef<ModelsResponse | null>(null);
+  const modelsRequestIdRef = useRef(0);
   const modelsInitializationRef = useRef<Promise<void> | null>(null);
   const promptRunIdRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
@@ -462,6 +470,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [messages, sessionStatsOverride, contextUsage, data?.context.messages, data?.filePath, data?.totalActiveMs, data?.stats, session?.id, session?.name]);
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
+    const timingRunId = promptRunIdRef.current;
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
@@ -483,6 +492,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const d = await res.json() as SessionData;
       if (sessionIdRef.current !== sid) return null;
       const persistedMessages = d.context.messages;
+      sentThinkingLevelRef.current ??= d.context.thinkingLevel;
       setData(d);
       setActiveLeafId(d.leafId);
       setMessages(persistedMessages);
@@ -507,6 +517,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (sessionIdRef.current !== sid) return null;
 
         const liveState = agentState.state;
+        if (promptRunIdRef.current === timingRunId) {
+          setTurnTiming((previous) => mergeTurnTiming(previous, liveState?.turnTiming ?? null));
+        }
         if (liveState) {
           if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
           if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
@@ -551,6 +564,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           ...prev.context,
           messages: [...d.context.messages, ...prev.context.messages],
           entryIds: [...d.context.entryIds, ...prev.context.entryIds],
+          turnTimings: [...new Map([...(prev.context.turnTimings ?? []), ...(d.context.turnTimings ?? [])].map((timing) => [timing.id, timing])).values()],
           oldestEntryId: d.context.oldestEntryId,
           hasMore: d.context.hasMore,
         } : d.context;
@@ -883,6 +897,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         ) return;
 
         const state = data.state;
+        if (state?.turnTiming !== undefined) setTurnTiming((previous) => mergeTurnTiming(previous, state.turnTiming ?? null));
         const promptActive = Boolean(data.running && state && (state.isStreaming || state.isPromptRunning));
         if (promptActive) {
           eventStreamGraceActiveRef.current = false;
@@ -1009,6 +1024,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // flight) — everything in it is stale, drop it.
       if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
       const state = data.state;
+      setTurnTiming((previous) => mergeTurnTiming(previous, state?.turnTiming ?? null));
       // Mirror compaction state unconditionally: a missed compaction_end
       // would otherwise leave the "Stop compaction" UI stuck. No state
       // (wrapper destroyed) means nothing is compacting.
@@ -1064,7 +1080,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
+      case "turn_timing":
+        setTurnTiming((previous) => mergeTurnTiming(previous, event.turnTiming as TurnTiming | null));
+        break;
       case "connected": {
+        if (event.turnTiming !== undefined) setTurnTiming((previous) => mergeTurnTiming(previous, event.turnTiming as TurnTiming | null));
         dispatch({ type: "end" });
         if (event.isStreaming === true) {
           cancelEventStreamGrace();
@@ -1161,7 +1181,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const msg = event.message as AgentMessage | undefined;
           if (msg?.role === "user") break;
           if (msg?.role === "assistant") {
-            dispatch({ type: "snapshot", message: msg });
+            dispatch({ type: "snapshot", message: withMessageThinking(msg, sentThinkingLevelRef.current) });
             if (msg.content.length > 0) setAgentPhase(null);
           } else if (msg) {
             setAgentPhase(null);
@@ -1212,7 +1232,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             return [...prev, delivered];
           });
         } else if (completed) {
-          setMessages((prev) => [...prev, normalizeToolCalls(completed)]);
+          setMessages((prev) => [...prev, withMessageThinking(normalizeToolCalls(completed), sentThinkingLevelRef.current)]);
         }
         dispatch({ type: "end" });
         setAgentPhase({ kind: "waiting_model" });
@@ -1318,6 +1338,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
 
     const promptRunId = promptRunIdRef.current + 1;
+    const levelMap = displayModel ? modelThinkingLevelMaps[`${displayModel.provider}:${displayModel.modelId}`] : undefined;
+    sentThinkingLevelRef.current = thinkingLevel === "auto" ? "auto" : (levelMap?.[thinkingLevel] ?? thinkingLevel);
     cancelEventStreamGrace();
     rpcPromptPendingRef.current = true;
 
@@ -1332,6 +1354,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setMessages((prev) => [...prev, userMsg]);
     optimisticUserMessageKeyRef.current = userMessageKey(userMsg);
     promptRunIdRef.current = promptRunId;
+    setTurnTiming(null);
     agentRunningRef.current = true;
     setAgentRunning(true);
     setAgentPhase(isSlashCommandPrompt ? { kind: "running_command" } : { kind: "waiting_model" });
@@ -1413,7 +1436,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission, thinkingLevel, displayModel, modelThinkingLevelMaps]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -1582,6 +1605,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [isCompacting, loadSession]);
 
   const loadModels = useCallback(async (signal?: AbortSignal) => {
+    const requestId = ++modelsRequestIdRef.current;
     const modelCwd = newSessionCwd ?? session?.cwd ?? "";
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
     let d: ModelsResponse;
@@ -1603,11 +1627,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       d = await res.json() as ModelsResponse;
       signal?.throwIfAborted();
     } catch (e) {
+      if (requestId !== modelsRequestIdRef.current) return;
       if (!signal?.aborted && !(e instanceof DOMException && e.name === "AbortError")) {
         setModelError(e instanceof Error ? e.message : String(e));
       }
       throw e;
     }
+    if (requestId !== modelsRequestIdRef.current) return;
     modelsResponseRef.current = d;
     setModelNames(d.models);
     setModelError(d.modelError ?? null);
@@ -1627,6 +1653,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       ), d);
     }
   }, [applyNewSessionThinking, isNew, newSessionCwd, session?.cwd]);
+
+  useEffect(() => {
+    const refreshDefaults = () => {
+      // Synced defaults must never change a running or historical session.
+      if (!isNew || sessionIdRef.current || ensuringNewSessionRef.current) return;
+      setToolPresetState(getPreferredToolPreset());
+      modelsInitializationRef.current = loadModels();
+      void modelsInitializationRef.current.catch(() => {});
+    };
+    window.addEventListener(CONFIG_SYNC_APPLIED_EVENT, refreshDefaults);
+    return () => window.removeEventListener(CONFIG_SYNC_APPLIED_EVENT, refreshDefaults);
+  }, [isNew, loadModels, setToolPresetState]);
 
   const handleBuiltinSlashCommand = useCallback(async (text: string): Promise<BuiltinSlashCommandResult> => {
     if (!text.startsWith("/")) return { handled: false };
@@ -2097,6 +2135,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   return {
     // State
     data, loading, error, activeLeafId, messages, entryIds, historyCursor, hasEarlierMessages, streamState,
+    turnTiming, turnTimings: data?.context.turnTimings ?? [],
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,

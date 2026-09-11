@@ -10,6 +10,13 @@ Typecheck: `node_modules/.bin/tsc --noEmit`
 Lint: `npm run lint`  
 **Never run `next build` during dev** — pollutes `.next/` and breaks `npm run dev`.
 
+### Local Windows updates
+
+- Use `npm run update:local` for the managed `D:\Pi` installation when dependencies and runtime assets are unchanged. It prepares the build while the installed service remains running, stages it, then stops only an idle service for replacement and restart. Do not ask the user to run `piw stop` before building.
+- `npm run update:local -- -Action Prepare` prepares without installation; `-Action Install` applies an already-prepared candidate after checking that source still matches. Active work blocks installation and leaves the candidate available.
+- `npm run build:local` keeps a separate workspace under `D:\Pi\cache\pi-web-local-build`, outside this checkout. Source synchronization preserves unchanged file mtimes and `.next/cache`; identical source reuses a successful build. Failed builds cannot be installed. Do not put permanent build copies under this source tree, where `tsconfig` and lint would scan them.
+- User-directory discovery is runtime data. Keep `readdirSync` and path assembly behind a directory parameter (see `lib/default-workspaces.ts`), so Next's file tracer cannot glob the developer's entire home directory while building.
+
 ### Dev server troubleshooting
 
 - Before starting a server, run `lsof -nP -iTCP:30141 -sTCP:LISTEN` and reuse the existing Pi Web process when it is healthy. A second `next dev` for the same checkout cannot use a different port as a workaround because both processes contend for `.next/dev/lock`.
@@ -152,6 +159,8 @@ The last preset explicitly selected by the user is stored in browser `localStora
 
 The last explicit thinking selection (including `auto`) is stored in browser `localStorage` immediately. Fresh composers resolve current explicit choice, model-scope pin, compatible remembered choice, then stored Pi per-model/global default. Unsupported remembered levels fall back without overwriting the preference. Existing sessions restore their own thinking state.
 
+Assistant model labels echo the composer's thinking label when Send is pressed. This is a browser display detail; do not intercept model requests or extend SDK message persistence for it. Older replies use the existing branch setting history where available.
+
 ### `enabledModels` scoping
 The `enabledModels` setting uses pi's `--models` syntax: minimatch globs against `provider/modelId` or a bare `modelId`, fuzzy matching for non-glob patterns, and an optional `:thinkingLevel` suffix. Never compare those patterns as literal strings — `lib/model-scope.ts` delegates to the SDK's `resolveModelScopeWithDiagnostics()` so pi-web and the TUI agree on the visible model list, and falls back to all available models when patterns resolve to nothing. `startRpcSession()` resolves that scope before creating an AgentSession and passes the selected initial model, thinking pin, and SDK-native `scopedModels` atomically; `GET /api/models` reuses the helper only for selector data, `thinkingLevelPins`, and `modelScopeWarnings` display.
 
@@ -181,6 +190,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 - Allowed roots are stored slash-normalized, but that is a Set-key convention, not a correctness requirement: `isPathWithinRoots()` (`lib/path-security.ts`, the single implementation behind `isFilePathAllowed()`) re-resolves and case-folds both sides, so either path form authorizes correctly. Keep that one implementation — it is the security boundary.
 
 ### Plugins and skills
+- Personal configuration sync uses `/api/config-sync`, a dedicated private GitHub repository and the server user's `gh` login. Only fields in `lib/config-sync-profile.ts` may leave the machine. Never serialize whole settings files, credentials, skills, sessions, jobs or local paths. Preserve the three-way merge base and GitHub SHA concurrency checks; do not resolve conflicts with timestamps or automatically reload active sessions. See `docs/config-sync.md`.
 - `/api/plugins` uses pi's `SettingsManager` + `DefaultPackageManager` for global/project package install, remove, update, enable, and disable. Disabling writes empty `extensions/skills/prompts/themes` arrays for that package entry.
 - `/api/skills` uses `DefaultResourceLoader` so settings paths, package skills, and project `.agents/skills` are listed the same way the runtime sees them.
 - Skill toggling edits only the `disable-model-invocation` frontmatter key on the target `SKILL.md`; keep that surgical so user formatting survives.

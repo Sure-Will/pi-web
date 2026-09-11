@@ -6,10 +6,15 @@ import { allowFileRoot } from "@/lib/file-access";
 import { projectIdentityKey } from "@/lib/project-identity";
 import { resolveProject } from "@/lib/worktree";
 
-function normalizeCwd(cwd: string): string {
-  if (cwd === "~") return homedir();
-  if (cwd.startsWith("~/")) return resolve(homedir(), cwd.slice(2));
+function normalizeCwdWithHome(cwd: string, homeDirectory: string): string {
+  if (cwd === "~") return homeDirectory;
+  if (cwd.startsWith("~/")) return resolve(homeDirectory, cwd.slice(2));
   return isAbsolute(cwd) ? cwd : resolve(cwd);
+}
+
+function normalizeCwd(cwd: string): string {
+  // Keep runtime paths opaque to Next's static deployment-asset tracer.
+  return normalizeCwdWithHome(cwd, homedir());
 }
 
 // POST /api/cwd/validate  body: { cwd: string }

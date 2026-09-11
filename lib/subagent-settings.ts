@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writePrivateFileAtomicSync } from "./atomic-file";
+import lockfile from "proper-lockfile";
 
 export interface SubagentSettings {
   builtInEnabled: boolean;
@@ -46,12 +47,15 @@ export function writeBuiltInSubagentsEnabled(
   enabled: boolean,
   settingsPath = getSubagentSettingsPath(),
 ): SubagentSettings {
-  const stored = readStoredSettings(settingsPath);
   mkdirSync(dirname(settingsPath), { recursive: true });
-  writePrivateFileAtomicSync(settingsPath, JSON.stringify({
-    ...stored,
-    version: 1,
-    builtInEnabled: enabled,
-  }, null, 2));
-  return { builtInEnabled: enabled };
+  const release = lockfile.lockSync(settingsPath, { realpath: false });
+  try {
+    const stored = readStoredSettings(settingsPath);
+    writePrivateFileAtomicSync(settingsPath, JSON.stringify({
+      ...stored,
+      version: 1,
+      builtInEnabled: enabled,
+    }, null, 2));
+    return { builtInEnabled: enabled };
+  } finally { release(); }
 }

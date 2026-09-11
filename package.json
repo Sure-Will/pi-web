@@ -32,6 +32,8 @@
     "dev": "next dev -H 127.0.0.1 -p 30141",
     "dev:lan": "next dev -H 0.0.0.0 -p 30141",
     "build": "next build --webpack",
+    "build:local": "node scripts/local-build.mjs",
+    "update:local": "pwsh -NoProfile -File scripts/update-local.ps1",
     "start": "next start -H 127.0.0.1 -p 30141",
     "start:lan": "next start -H 0.0.0.0 -p 30141",
     "lint": "eslint .",

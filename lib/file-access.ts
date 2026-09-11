@@ -1,6 +1,5 @@
-import { readdirSync } from "fs";
 import { homedir } from "os";
-import path from "path";
+import { listDefaultWorkspaces } from "./default-workspaces";
 import { getAdditionalAllowedRoots, normalizeSlashes } from "./allowed-roots";
 import { isExistingPathWithinRoots, isPathWithinRoots } from "./path-security";
 import { listAllSessions } from "./session-reader";
@@ -33,10 +32,8 @@ export async function getAllowedFileRoots(): Promise<Set<string>> {
 
   // Also allow ~/pi-cwd-* directories created by the default-cwd endpoint.
   try {
-    for (const name of readdirSync(homedir())) {
-      if (/^pi-cwd-\d{8}$/.test(name)) {
-        roots.add(normalizeSlashes(path.join(homedir(), name)));
-      }
+    for (const directory of listDefaultWorkspaces(homedir())) {
+      roots.add(normalizeSlashes(directory));
     }
   } catch {
     // ignore if home is unreadable

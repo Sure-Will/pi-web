@@ -43,6 +43,7 @@ function setup(fetchImpl) {
     newSessionCwd: "/project", session: null, isNew: true,
     sessionIdRef: { current: null }, thinkingLevelOverrideRef: { current: null },
     modelsInitializationRef: {current:null},
+    modelsRequestIdRef: {current:0},
     modelsResponseRef: {current:null}, newSessionModelOverrideRef:{current:null},
     explicitThinkingSelectionRef:{current:null}, ensuringNewSessionRef:{current:null},
     preferred:null, resolveThinkingPreference,
@@ -127,6 +128,20 @@ test("cancelling model loads prevents state writes and further retries", async (
   waiting.context.delay = async () => waiting.context.controller.abort();
   await waiting.run();
   assert.equal(attempts, 1);
+});
+
+test("a late pre-sync model response cannot overwrite newer synchronized defaults", async () => {
+  const first = Promise.withResolvers();
+  let calls = 0;
+  const state = setup(async () => ++calls === 1 ? first.promise : Response.json({
+    models: {}, modelList: [{ provider: "test", id: "new" }], defaultModel: { provider: "test", modelId: "new" },
+  }));
+  const oldLoad = state.context.loadModels();
+  await state.context.loadModels();
+  first.resolve(Response.json({ models: {}, modelList: [{ provider: "test", id: "old" }], defaultModel: { provider: "test", modelId: "old" } }));
+  await oldLoad;
+  assert.equal(state.context.modelsResponseRef.current.defaultModel.modelId, "new");
+  assert.equal(state.writes.some(([name, value]) => name === "NewSessionDefaultModel" && value?.modelId === "old"), false);
 });
 
 const modelData={models:{"openai-codex:gpt-6-astra":"Astra"}, modelList:[{provider:"openai-codex",id:"gpt-6-astra"}],defaultModel:{provider:"openai-codex",modelId:"gpt-6-astra"},thinkingLevels:{"openai-codex:gpt-6-astra":["low","high","max"]},thinkingLevelDefaults:{"openai-codex:gpt-6-astra":"high"}};

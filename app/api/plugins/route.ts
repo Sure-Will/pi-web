@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { lockPluginOperations } from "@/lib/plugin-operation-lock";
 import { existsSync, readFileSync, statSync } from "fs";
 import { basename, dirname, extname, join, relative } from "path";
 import {
@@ -305,6 +306,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
   }
 
+  let releasePlugins: (() => Promise<void>) | undefined;
   try {
     const body = await req.json() as {
       action?: PluginAction;
@@ -320,6 +322,7 @@ export async function POST(req: Request) {
     }
 
     const agentDir = getAgentDir();
+    releasePlugins = await lockPluginOperations(agentDir);
     const projectTrust = getProjectTrustStatus(body.cwd, agentDir);
     const settingsManager = SettingsManager.create(body.cwd, agentDir, {
       projectTrusted: projectTrust.trusted,
@@ -367,6 +370,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json(await readPlugins(body.cwd));
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
-  }
+    const busy = (error as NodeJS.ErrnoException).code === "ELOCKED";
+    return NextResponse.json({ error: busy ? "Another plugin operation is running. Try again shortly." : error instanceof Error ? error.message : String(error) }, { status: busy ? 409 : 500 });
+  } finally { await releasePlugins?.(); }
 }

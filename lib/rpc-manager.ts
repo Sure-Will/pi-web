@@ -17,6 +17,7 @@ import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trus
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
+import { findTurnTimingAnchor, TURN_TIMING_CUSTOM_TYPE, type TurnTiming } from "./turn-timing";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type {
@@ -229,6 +230,8 @@ export class AgentSessionWrapper {
   private activeMutatingCommands = 0;
   private sessionReplacement: "fork" | "clone" | null = null;
   private agentRunNeedsCompletion = false;
+  private currentTurnTiming: TurnTiming | null = null;
+  private turnTimingStartIndex = 0;
   private promptAdmissionTail: Promise<void> = Promise.resolve();
   private extensionsBound = false;
   private extensionBindingPromise: Promise<void> | null = null;
@@ -277,6 +280,38 @@ export class AgentSessionWrapper {
     return this.inner.isStreaming;
   }
 
+  get turnTiming(): TurnTiming | null {
+    if (!this.currentTurnTiming || this.currentTurnTiming.endedAt !== undefined) return this.currentTurnTiming;
+    const entries = this.inner.sessionManager?.getEntries?.() as SessionEntry[] | undefined;
+    return {
+      ...this.currentTurnTiming,
+      anchorEntryId: findTurnTimingAnchor(entries ?? [], this.turnTimingStartIndex),
+    };
+  }
+
+  private beginTurnTiming(): string {
+    if (this.currentTurnTiming && this.currentTurnTiming.endedAt === undefined) return this.currentTurnTiming.id;
+    this.turnTimingStartIndex = this.inner.sessionManager?.getEntries?.().length ?? 0;
+    this.currentTurnTiming = { id: randomUUID(), startedAt: Date.now() };
+    this.emit({ type: "turn_timing", turnTiming: this.currentTurnTiming });
+    return this.currentTurnTiming.id;
+  }
+
+  private finishTurnTiming(): void {
+    const timing = this.turnTiming;
+    if (!timing || timing.endedAt !== undefined) return;
+    const completed = { ...timing, endedAt: Math.max(timing.startedAt, Date.now()) };
+    this.currentTurnTiming = completed;
+    if (completed.anchorEntryId) {
+      try {
+        this.inner.sessionManager.appendCustomEntry(TURN_TIMING_CUSTOM_TYPE, { version: 1, ...completed });
+      } catch (error) {
+        console.error("[pi-web] failed to persist turn timing:", error instanceof Error ? error.message : error);
+      }
+    }
+    this.emit({ type: "turn_timing", turnTiming: completed });
+  }
+
   isAlive(): boolean {
     return this._alive;
   }
@@ -295,7 +330,10 @@ export class AgentSessionWrapper {
 
   start(): void {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
-      if (event.type === "agent_start") this.agentRunNeedsCompletion = true;
+      if (event.type === "agent_start") {
+        this.agentRunNeedsCompletion = true;
+        this.beginTurnTiming();
+      }
       if (event.type === "agent_end") {
         invalidateSessionListCache();
       }
@@ -309,6 +347,7 @@ export class AgentSessionWrapper {
   private notifyAgentRunCompleteIfIdle(): void {
     if (!this.agentRunNeedsCompletion || this.isRunning()) return;
     this.agentRunNeedsCompletion = false;
+    this.finishTurnTiming();
     if (this.suppressCompletionNotifications) return;
     try {
       this.onAgentRunComplete?.(this.sessionId);
@@ -608,6 +647,19 @@ export class AgentSessionWrapper {
           };
 
           this.pendingPromptCount += 1;
+          // A submission during preflight/compaction may see isStreaming=false
+          // while another prompt still owns the active timer. Only its creator
+          // may discard that timer after a rejected preflight.
+          const timingId = !this.inner.isStreaming
+            && (!this.currentTurnTiming || this.currentTurnTiming.endedAt !== undefined)
+            ? this.beginTurnTiming()
+            : undefined;
+          const discardRejectedTiming = () => {
+            if (!preflightAccepted && timingId && this.currentTurnTiming?.id === timingId) {
+              this.currentTurnTiming = null;
+              this.emit({ type: "turn_timing", turnTiming: null });
+            }
+          };
           let prompt: Promise<void>;
           try {
             prompt = this.inner.prompt(command.message as string, {
@@ -624,6 +676,7 @@ export class AgentSessionWrapper {
               },
             });
           } catch (error) {
+            discardRejectedTiming();
             finishPrompt();
             throw error;
           }
@@ -636,6 +689,7 @@ export class AgentSessionWrapper {
             if (!streamingBehavior) this.emit({ type: "prompt_done" });
           }, (error) => {
             rejectPreflight(error);
+            discardRejectedTiming();
             finishPrompt();
             invalidateSessionListCache();
             // A preflight rejection is returned by the POST itself. Only an
@@ -680,6 +734,7 @@ export class AgentSessionWrapper {
           sessionFile: this.inner.sessionFile ?? "",
           isStreaming: this.inner.isStreaming,
           isPromptRunning: this.pendingPromptCount > 0,
+          turnTiming: this.turnTiming,
           isBashRunning: this.inner.isBashRunning,
           isCompacting: this.inner.isCompacting,
           autoCompactionEnabled: this.inner.autoCompactionEnabled,
