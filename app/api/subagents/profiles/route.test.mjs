@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -241,3 +241,53 @@ for (const operation of ["edit and duplicate", "toggle"]) {
     }
   });
 }
+
+
+test("imported profile names edit, toggle and delete their original file", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-web-profile-alias-"));
+  allowFileRoot(cwd);
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const dir = join(cwd, ".pi", "agents");
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "z-review.md");
+  await writeFile(path, "---\nname: audit\ntools: read\nisolation: worktree\nenabled: true\n---\nAudit code.\n");
+  let response = await PATCH(jsonRequest("PATCH", { cwd, scope: "project", name: "audit", enabled: false }));
+  assert.equal(response.status, 200);
+  const disabled = (await response.json()).profile;
+  assert.equal(disabled.filePath, path);
+  assert.deepEqual(await readdir(dir), ["z-review.md"]);
+  assert.match(await readFile(path, "utf8"), /enabled: false/);
+  response = await PUT(jsonRequest("PUT", { cwd, scope: "project", profile: { ...editableProfile(disabled), description: "Reviewed" } }));
+  assert.equal(response.status, 200);
+  assert.match(await readFile(path, "utf8"), /description: Reviewed/);
+  response = await PUT(jsonRequest("PUT", { cwd, scope: "project", profile: { ...editableProfile(disabled), name: "audit-copy" } }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await readdir(dir)).sort(), ["audit-copy.md", "z-review.md"]);
+  response = await DELETE(jsonRequest("DELETE", { cwd, scope: "project", name: "audit" }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await readdir(dir), ["audit-copy.md"]);
+});
+
+
+test("profile filename collisions and ambiguous imported ids never overwrite another source", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-web-profile-collision-"));
+  allowFileRoot(cwd);
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const dir = join(cwd, ".pi", "agents");
+  await mkdir(dir, { recursive: true });
+  const original = "---\nname: reviewer\ntools: read\n---\nOriginal rules.\n";
+  await writeFile(join(dir, "worker.md"), original);
+  for (const name of ["worker", "Worker"]) {
+    const collides = await readFile(join(dir, `${name}.md`), "utf8").then(() => true, () => false);
+    const response = await PUT(jsonRequest("PUT", { cwd, scope: "project", profile: profile({ name }) }));
+    assert.equal(response.status, collides ? 400 : 200);
+    assert.equal(await readFile(join(dir, "worker.md"), "utf8"), original);
+  }
+  await writeFile(join(dir, "another.md"), original);
+  for (const [method, handler] of [["PUT", PUT], ["PATCH", PATCH], ["DELETE", DELETE]]) {
+    const response = await handler(jsonRequest(method, { cwd, scope: "project", name: "reviewer", enabled: false, profile: profile({ name: "reviewer" }) }));
+    assert.equal(response.status, 400);
+    assert.equal(await readFile(join(dir, "worker.md"), "utf8"), original);
+    assert.equal(await readFile(join(dir, "another.md"), "utf8"), original);
+  }
+});

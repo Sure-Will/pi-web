@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { dump as stringifyYaml } from "js-yaml";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { parseFrontmatter } from "./frontmatter";
 import { writePrivateFileAtomicSync } from "./atomic-file";
@@ -387,6 +387,25 @@ function assertWritableProfileDirectory(cwd: string, scope: SubagentWritableScop
   return dir;
 }
 
+// Imported profiles may declare an id different from their file basename.
+// Resolve that id only among regular files inside the validated writable scope.
+function writableProfilePath(cwd: string, scope: SubagentWritableScope, name: string): string {
+  const dir = assertWritableProfileDirectory(cwd, scope);
+  const profiles = readProfileDirectory(dir, scope, cwd);
+  const matching = profiles.filter((profile) => profile.name.toLowerCase() === name.toLowerCase());
+  if (matching.length > 1) throw new Error("Multiple agent files use this name; give them distinct names before editing");
+  if (matching[0]?.filePath) return matching[0].filePath;
+  const target = join(dir, `${name}.md`);
+  if (existsSync(target)) {
+    const targetStat = statSync(target);
+    if (profiles.some((profile) => {
+      const sourceStat = statSync(profile.filePath!);
+      return sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino;
+    })) throw new Error("Agent filename is already used by another profile");
+  }
+  return target;
+}
+
 export function saveSubagentProfile(
   cwd: string,
   scope: SubagentWritableScope,
@@ -416,7 +435,7 @@ export function saveSubagentProfile(
   if (scope === "project" && !isProjectProfilePathAllowed(cwd, dir)) {
     throw new Error("Agent profile directory is outside the project root");
   }
-  const filePath = join(dir, `${name}.md`);
+  const filePath = writableProfilePath(cwd, scope, name);
   const stored = readStoredFrontmatter(filePath);
   const managed: Record<string, unknown> = {
     description,
@@ -467,7 +486,7 @@ export function saveSubagentProfile(
 
 export function deleteSubagentProfile(cwd: string, scope: SubagentWritableScope, name: string): void {
   const safeName = assertProfileName(name);
-  const filePath = join(assertWritableProfileDirectory(cwd, scope), `${safeName}.md`);
+  const filePath = writableProfilePath(cwd, scope, safeName);
   if (existsSync(filePath)) unlinkSync(filePath);
 }
 
