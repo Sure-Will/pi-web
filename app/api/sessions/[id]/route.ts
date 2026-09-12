@@ -15,6 +15,7 @@ import {
 } from "@/lib/session-reader";
 import { sessionPathKey } from "@/lib/session-path";
 import { abortSubagent, getRpcSession, getRpcSessionInfos } from "@/lib/rpc-manager";
+import { getActiveSubagentStatus } from "@/lib/subagent-runtime";
 import { projectTreeForResponse } from "@/lib/project-tree";
 import { computeSessionTotalActiveMs } from "@/lib/session-timing";
 import { computeSessionStats } from "@/lib/session-stats";
@@ -68,7 +69,7 @@ export async function GET(
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
     const subagent = header
-      ? readSubagentRun(entries as never, header.id, filePath)
+      ? readSubagentRun(entries as never, header.id, filePath, getActiveSubagentStatus(header.id))
       : null;
     const toolNames = readSubagentSessionResources(entries as never)?.tools
       ?? readSessionToolSelection(entries as never);

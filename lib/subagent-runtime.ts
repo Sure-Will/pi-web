@@ -78,6 +78,7 @@ type StoredSubagentExecution = {
 declare global {
   var __piSubagentRuns: Map<string, StoredSubagentExecution> | undefined;
   var __piSubagentQueue: SubagentQueue<SubagentRunInfo> | undefined;
+  var __piSubagentResumeLocks: Set<string> | undefined;
 }
 const SUBAGENT_CONTEXT_LIMIT = 50_000;
 const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -85,6 +86,11 @@ const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium
 function getSubagentRuns(): Map<string, StoredSubagentExecution> {
   if (!globalThis.__piSubagentRuns) globalThis.__piSubagentRuns = new Map();
   return globalThis.__piSubagentRuns;
+}
+
+/** Only an execution owned by this process can be queued or running. */
+export function getActiveSubagentStatus(sessionId: string): SubagentRunInfo["status"] | undefined {
+  return globalThis.__piSubagentRuns?.get(sessionId)?.run.status;
 }
 
 function getSubagentQueue(): SubagentQueue<SubagentRunInfo> {
@@ -419,6 +425,17 @@ export function createSubagentController(
   }
 
   async function resume(request: ResumeSubagentRequest): Promise<SubagentExecution> {
+    const locks = globalThis.__piSubagentResumeLocks ??= new Set();
+    if (locks.has(request.sessionId)) throw new Error("Subagent is already resuming");
+    locks.add(request.sessionId);
+    try {
+      return await resumeOnce(request);
+    } finally {
+      locks.delete(request.sessionId);
+    }
+  }
+
+  async function resumeOnce(request: ResumeSubagentRequest): Promise<SubagentExecution> {
     const enabled = dependencies.isBuiltInSubagentsEnabled ?? isBuiltInSubagentsEnabled;
     if (!enabled()) throw new Error("Pi Web built-in sub-agents are disabled");
     const parentSessionId = request.parentContext.sessionManager.getSessionId();
@@ -568,13 +585,16 @@ export function createSubagentController(
   async function abort(sessionId: string): Promise<void> {
     const wrapper = dependencies.getSession(sessionId);
     const stored = getSubagentRuns().get(sessionId);
-    if (stored?.run.status === "queued") {
+    if (stored) {
       stored.abortRequested = true;
-      if (!stored.cancelQueued?.()) throw new Error("Subagent is no longer queued");
+      if (stored.run.status === "queued") stored.cancelQueued?.();
+      else if (wrapper?.isAlive() && wrapper.isRunning()) await wrapper.inner.abort();
+      // Prompt cancellation can finish before worktree cleanup and the final
+      // JSONL write. Callers such as DELETE must wait for all of that work.
+      await stored.completion;
       return;
     }
     if (!wrapper?.isAlive() || !wrapper.isRunning()) throw new Error("Subagent is not running");
-    if (stored) stored.abortRequested = true;
     await wrapper.inner.abort();
   }
 

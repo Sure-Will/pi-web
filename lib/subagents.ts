@@ -582,7 +582,7 @@ export function selectSubagentExtensionTools(
   });
 }
 
-export function readSubagentRun(entries: readonly SessionEntry[], sessionId: string, sessionPath: string): SubagentRunInfo | null {
+export function readSubagentRun(entries: readonly SessionEntry[], sessionId: string, sessionPath: string, activeStatus?: SubagentRunInfo["status"]): SubagentRunInfo | null {
   const data = subagentMetadataData(entries);
   if (!data) return null;
   const lifecycleEntry = [...entries].reverse().find((entry) =>
@@ -592,15 +592,10 @@ export function readSubagentRun(entries: readonly SessionEntry[], sessionId: str
     ? lifecycleEntry
     : undefined;
   const result = resultEntry?.type === "custom" && isRecord(resultEntry.data) ? resultEntry.data : undefined;
-  const statusEntry = lifecycleEntry?.type === "custom" && lifecycleEntry.customType === SUBAGENT_STATUS_TYPE
-    ? lifecycleEntry
-    : undefined;
-  const statusData = statusEntry?.type === "custom" && isRecord(statusEntry.data) ? statusEntry.data : undefined;
+  // A saved queued/running entry is a checkpoint, not proof of a live owner.
   const persistedStatus = result && (result.status === "completed" || result.status === "failed" || result.status === "aborted")
     ? result.status
-    : statusData?.version === 1 && (statusData.status === "queued" || statusData.status === "running")
-      ? statusData.status
-      : "interrupted";
+    : "interrupted";
   return {
     sessionId,
     sessionPath,
@@ -610,7 +605,7 @@ export function readSubagentRun(entries: readonly SessionEntry[], sessionId: str
     description: typeof data.description === "string" ? data.description : "Subagent",
     task: typeof data.task === "string" ? data.task : "",
     runInBackground: data.runInBackground === true,
-    status: persistedStatus,
+    status: activeStatus ?? persistedStatus,
     createdAt: typeof data.createdAt === "string" ? data.createdAt : "",
     ...(result && typeof result.completedAt === "string" ? { completedAt: result.completedAt } : {}),
     ...(result && typeof result.result === "string" ? { result: result.result } : {}),

@@ -138,7 +138,15 @@ export function mergeSessionLists(
   const byId = new Map(supplementalSessions.map((session) => [session.id, session]));
   // A disk scan is authoritative once the JSONL exists. In particular, this
   // replaces a transient registry snapshot without briefly rendering two rows.
-  for (const session of persistedSessions) byId.set(session.id, session);
+  for (const session of persistedSessions) {
+    const live = byId.get(session.id)?.relation;
+    // Disk owns saved metadata; only this process can report active execution.
+    const relation = session.relation;
+    const active = relation?.kind === "subagent" && live?.kind === "subagent"
+      && relation.parentSessionId === live.parentSessionId
+      && (live.status === "queued" || live.status === "running");
+    byId.set(session.id, active ? { ...session, relation: { ...relation, status: live.status } } : session);
+  }
   return [...byId.values()].sort((a, b) => b.modified.localeCompare(a.modified));
 }
 
