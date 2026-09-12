@@ -10,6 +10,7 @@ const themes = ["light", "dark", "mist", "rose", "pine", "auto"];
 const labels = ["Light", "Dark", "Mist", "Rose", "Pine", "System"];
 await mkdir(artifacts, { recursive: true });
 const browser = await chromium.launch();
+let debugPage;
 
 function contrast(a, b) {
   const luminance = (hex) => {
@@ -28,13 +29,18 @@ try {
   for (const width of [1440, 390, 320]) {
     const context = await browser.newContext({ viewport: { width, height: 900 }, locale: "en-US", colorScheme: "light", reducedMotion: "reduce" });
     const page = await context.newPage();
+    debugPage = page;
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    // Test local theme persistence independently of the shared server profile.
+    await page.route("**/api/config-sync", (route) => route.fulfill({ json: { enabled: false, repository: "", browser: {} } }));
     // Keep the check independent of the user's session catalogue.
     await page.route(/\/api\/sessions(?:\?.*)?$/, (route) => route.fulfill({ json: { sessions: [] } }));
     await page.goto(base);
     await page.getByText("No sessions found", { exact: true }).waitFor({ state: "attached" });
     const openSettings = async () => {
+      // Inline theme bootstrapping precedes React hydration after reload.
+      await page.getByText("No sessions found", { exact: true }).waitFor({ state: "attached" });
       const sidebar = page.getByRole("button", { name: "Show sidebar", exact: true });
       if (width <= 640) await sidebar.waitFor();
       if (await sidebar.isVisible()) await sidebar.click();
@@ -111,6 +117,12 @@ try {
     console.log(`PASS ${width}px: palettes, contrast, persistence, system preference, settings selection and keyboard navigation`);
     await context.close();
   }
+} catch (error) {
+  if (debugPage && !debugPage.isClosed()) {
+    await debugPage.screenshot({ path: `${artifacts}/failure.png` });
+    console.error(await debugPage.locator("body").innerText());
+  }
+  throw error;
 } finally {
   await browser.close();
 }
