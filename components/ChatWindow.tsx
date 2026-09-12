@@ -669,10 +669,10 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
     return () => observer.disconnect();
   }, [historyCursor, hasEarlierMessages, session, activeLeafId, loadContext, sessionIdRef, scrollContainerRef]);
 
-  // Keep the rendered window at least as large as what's loaded, so prepended
-  // (older) pages stay visible instead of being sliced off the top.
+  // A turn can add timing/process rows beyond its message count. Reserve up
+  // to two rows per loaded message so prepended history is not sliced away.
   useEffect(() => {
-    setVisibleCount((current) => Math.max(current, messages.length));
+    setVisibleCount((current) => Math.max(current, messages.length * 2));
   }, [messages.length]);
 
   // After visibleCount increases (more messages prepended), restore the
@@ -1109,7 +1109,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 if (finalAssistantIdx === -1) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
                     rendered.push(renderMessage(renderIdx));
-                    if (renderIdx === userIdx) rendered.push(timingRow);
+                    if (renderIdx === userIdx && timingRow) rendered.push(timingRow);
                   }
                   idx = endIdx;
                   continue;
@@ -1118,7 +1118,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                 if (isLiveTail) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
                     rendered.push(renderMessage(renderIdx));
-                    if (renderIdx === userIdx) rendered.push(timingRow);
+                    if (renderIdx === userIdx && timingRow) rendered.push(timingRow);
                   }
                   idx = endIdx;
                   continue;
@@ -1178,7 +1178,7 @@ export function ChatWindow({ session, searchTarget, onSearchTargetHandled, initi
                   );
                 }
 
-                if (processViews.length === 0) rendered.push(timingRow);
+                if (processViews.length === 0 && timingRow) rendered.push(timingRow);
 
                 if (finalAnswerMessage) {
                   // Each tool call is stored as its own assistant entry, so the
