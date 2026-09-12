@@ -168,8 +168,8 @@ test("an empty persisted session displays the model it will use on first send", 
 test("the selector prefers the live wrapper model over persisted response metadata", () => {
   assert.match(source, /model\?: \{ provider: string; id: string \}/);
   assert.match(source, /const currentModel = currentModelOverride \?\? liveModel \?\? data\?\.context\.model \?\? pendingModel \?\? null/);
-  assert.match(source, /syncLiveModel\(liveState\)/);
-  assert.match(source, /syncLiveModel\(state\);[\s\S]*?const busy = data\.running/);
+  assert.match(source, /syncLiveModel\(liveState, sid, selectionVersion\)/);
+  assert.match(source, /syncLiveModel\(state, sid, selectionVersion\);[\s\S]*?const busy = data\.running/);
 });
 
 test("existing-session prompts rely on the persisted tool selection", () => {

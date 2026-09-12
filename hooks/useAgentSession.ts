@@ -369,6 +369,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const promptRunIdRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
   const modelSwitchPendingRef = useRef(false);
+  const modelSelectionVersionRef = useRef(0);
   const draftKeyAliasesRef = useRef(new Map<string, string>());
   const sessionHookMountedRef = useRef(true);
 
@@ -420,7 +421,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     : currentModel ?? (data?.context.messages.length === 0 ? newSessionDefaultModel : null);
   const composerDraftKey = session?.id ?? newSessionDraftKey ?? undefined;
 
-  const syncLiveModel = useCallback((state?: AgentStateResponse) => {
+  const syncLiveModel = useCallback((state: AgentStateResponse | undefined, sid: string, selectionVersion: number) => {
+    if (!sessionHookMountedRef.current || sessionIdRef.current !== sid
+      || modelSwitchPendingRef.current || modelSelectionVersionRef.current !== selectionVersion) return;
     setLiveModel(state?.model
       ? { provider: state.model.provider, modelId: state.model.id }
       : null);
@@ -482,6 +485,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
     const timingRunId = promptRunIdRef.current;
+    const selectionVersion = modelSelectionVersionRef.current;
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
@@ -501,7 +505,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
-      if (sessionIdRef.current !== sid) return null;
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid
+        || modelSwitchPendingRef.current || modelSelectionVersionRef.current !== selectionVersion) return null;
       const persistedMessages = d.context.messages;
       sentThinkingLevelRef.current ??= d.context.thinkingLevel;
       setData(d);
@@ -525,13 +530,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const stateRes = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
         if (!stateRes.ok) throw new Error(`HTTP ${stateRes.status}`);
         const agentState = await stateRes.json() as { running: boolean; state?: AgentStateResponse };
-        if (sessionIdRef.current !== sid) return null;
+        if (!sessionHookMountedRef.current || sessionIdRef.current !== sid
+          || modelSwitchPendingRef.current || modelSelectionVersionRef.current !== selectionVersion) return null;
 
         const liveState = agentState.state;
         if (promptRunIdRef.current === timingRunId) {
           setTurnTiming((previous) => mergeTurnTiming(previous, liveState?.turnTiming ?? null));
         }
-        syncLiveModel(liveState);
+        syncLiveModel(liveState, sid, selectionVersion);
         if (liveState) {
           if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
           if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
@@ -556,6 +562,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [setToolPresetState, syncLiveModel]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null, before?: string | null, options?: { tail?: number; signal?: AbortSignal }) => {
+    const selectionVersion = modelSelectionVersionRef.current;
     try {
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       if (leafId) params.set("leafId", leafId);
@@ -567,7 +574,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const res = await fetch(url, { signal: options?.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as { context: SessionData["context"] };
-      if (sessionIdRef.current !== sid || options?.signal?.aborted || !sessionHookMountedRef.current) return;
+      if (sessionIdRef.current !== sid || options?.signal?.aborted || !sessionHookMountedRef.current
+        || modelSelectionVersionRef.current !== selectionVersion || modelSwitchPendingRef.current) return;
       setHistoryCursor(d.context.oldestEntryId);
       setHasEarlierMessages(d.context.hasMore);
       setData((prev) => {
@@ -702,12 +710,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const sid = sessionIdRef.current ?? await ensureNewSession();
     if (!sid) return;
 
+    const selectionVersion = modelSelectionVersionRef.current;
     const [state] = await Promise.all([
       sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" }),
       loadTools(sid),
     ]);
     if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
-    syncLiveModel(state);
+    syncLiveModel(state, sid, selectionVersion);
     setSystemPrompt(state.systemPrompt ?? "");
   }, [ensureNewSession, loadTools, syncLiveModel]);
 
@@ -940,6 +949,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         || !eventStreamGraceActiveRef.current
       ) return;
 
+      const selectionVersion = modelSelectionVersionRef.current;
       try {
         const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -952,7 +962,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         const state = data.state;
         if (state?.turnTiming !== undefined) setTurnTiming((previous) => mergeTurnTiming(previous, state.turnTiming ?? null));
-        syncLiveModel(state);
+        syncLiveModel(state, sid, selectionVersion);
         const promptActive = Boolean(data.running && state && (state.isStreaming || state.isPromptRunning));
         if (promptActive) {
           eventStreamGraceActiveRef.current = false;
@@ -1017,12 +1027,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
     while (agentRunningRef.current && Date.now() - startedAt < PROMPT_SETTLE_MAX_MS) {
       if (runId !== undefined && promptRunIdRef.current !== runId) return;
+      const selectionVersion = modelSelectionVersionRef.current;
       try {
         const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
         if (res.ok) {
           const data = await res.json() as { running?: boolean; state?: AgentStateResponse };
+          if (sessionIdRef.current !== sid || (runId !== undefined && promptRunIdRef.current !== runId)) return;
           const state = data.state;
-          syncLiveModel(state);
+          syncLiveModel(state, sid, selectionVersion);
           if (!data.running || !state || (!state.isStreaming && !state.isPromptRunning)) {
             await finishPromptWithoutStream(sid, runId);
             return;
@@ -1045,11 +1057,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       && sessionIdRef.current === sid
     ) {
       await delay(BASH_STATE_RECONCILE_MS);
+      const selectionVersion = modelSelectionVersionRef.current;
       try {
         const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
         if (!res.ok) continue;
         const data = await res.json() as { state?: AgentStateResponse };
-        syncLiveModel(data.state);
+        if (bashRecoveryIdRef.current !== recoveryId || sessionIdRef.current !== sid) return;
+        syncLiveModel(data.state, sid, selectionVersion);
         if (data.state?.isBashRunning) continue;
 
         await loadSession(sid);
@@ -1072,6 +1086,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const reconcileAgentState = useCallback(async (sid: string) => {
     if (!agentRunningRef.current || sessionIdRef.current !== sid) return;
     const runId = promptRunIdRef.current;
+    const selectionVersion = modelSelectionVersionRef.current;
     try {
       const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
       if (!res.ok) return;
@@ -1082,7 +1097,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
       const state = data.state;
       setTurnTiming((previous) => mergeTurnTiming(previous, state?.turnTiming ?? null));
-      syncLiveModel(state);
+      syncLiveModel(state, sid, selectionVersion);
       // Mirror compaction state unconditionally: a missed compaction_end
       // would otherwise leave the "Stop compaction" UI stuck. No state
       // (wrapper destroyed) means nothing is compacting.
@@ -1170,11 +1185,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setRetryInfo(null);
         dispatch({ type: "end" });
         if (sessionIdRef.current) {
-          loadSession(sessionIdRef.current);
-          fetch(`/api/agent/${encodeURIComponent(sessionIdRef.current)}`)
+          const sid = sessionIdRef.current;
+          const runId = promptRunIdRef.current;
+          const selectionVersion = modelSelectionVersionRef.current;
+          loadSession(sid);
+          fetch(`/api/agent/${encodeURIComponent(sid)}`)
             .then((r) => r.json())
             .then((d: { state?: AgentStateResponse }) => {
-              syncLiveModel(d.state);
+              if (!sessionHookMountedRef.current || sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
+              syncLiveModel(d.state, sid, selectionVersion);
               if (d.state?.contextUsage !== undefined) setContextUsage(d.state.contextUsage ?? null);
               if (d.state?.systemPrompt !== undefined) setSystemPrompt(d.state.systemPrompt ?? null);
               if (d.state?.extensionStatuses !== undefined) setExtensionStatuses(d.state.extensionStatuses ?? []);
@@ -1630,6 +1649,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleModelChange = useCallback(async (provider: string, modelId: string) => {
     if (isNew) {
+      modelSelectionVersionRef.current += 1;
       const selectedModel = { provider, modelId };
       newSessionModelOverrideRef.current = selectedModel;
       setNewSessionModel(selectedModel);
@@ -1648,6 +1668,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
     const sid = sessionIdRef.current;
     if (!sid || modelSwitchPendingRef.current) return;
+    let switchVersion = ++modelSelectionVersionRef.current;
     const target = { provider, modelId };
     const previousOverride = currentModelOverride;
     modelSwitchPendingRef.current = true;
@@ -1655,13 +1676,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setModelSwitching(true);
     try {
       const selected = await sendAgentCommand<{ provider: string; id: string }>(sid, { type: "set_model", provider, modelId });
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid || modelSelectionVersionRef.current !== switchVersion) return;
+      // Invalidate reads started both before and during the command.
+      switchVersion = ++modelSelectionVersionRef.current;
       setLiveModel({ provider: selected.provider, modelId: selected.id });
       // Pi persists model_change synchronously. Reload the canonical session so
       // the model, thinking level, and active leaf all advance together.
       modelSwitchPendingRef.current = false;
       await loadSession(sid);
     } catch (e) {
+      if (!sessionHookMountedRef.current || sessionIdRef.current !== sid || modelSelectionVersionRef.current !== switchVersion) return;
       console.error("Failed to set model:", e);
+      switchVersion = ++modelSelectionVersionRef.current;
       modelSwitchPendingRef.current = false;
       setCurrentModelOverride(previousOverride);
       addNotice({
@@ -1672,8 +1698,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // dropped connection), so let the session file settle the displayed model.
       await loadSession(sid, false, true);
     } finally {
-      modelSwitchPendingRef.current = false;
-      setModelSwitching(false);
+      if (modelSelectionVersionRef.current === switchVersion) {
+        modelSwitchPendingRef.current = false;
+        setModelSwitching(false);
+      }
     }
   }, [addNotice, applyNewSessionThinking, currentModelOverride, isNew, loadSession, setNewSessionModel]);
 
@@ -1976,13 +2004,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setSlashCommands([]);
       setExtensionStatuses([]);
       setExtensionWidgets([]);
+      const selectionVersion = modelSelectionVersionRef.current;
       const [state] = await Promise.all([
         sendAgentCommand<AgentStateResponse>(activeSessionId, { type: "get_state" }),
         loadTools(activeSessionId),
       ]);
       if (sessionHookMountedRef.current && sessionIdRef.current === activeSessionId) {
         setSystemPrompt(state.systemPrompt ?? "");
-        syncLiveModel(state);
+        syncLiveModel(state, activeSessionId, selectionVersion);
       }
     } catch (e) {
       console.error("Failed to set tools:", e);
