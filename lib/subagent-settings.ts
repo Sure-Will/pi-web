@@ -86,12 +86,15 @@ export function writeSubagentMaxConcurrent(
   if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > MAX_SUBAGENT_MAX_CONCURRENT) {
     throw new Error(`maxConcurrent must be an integer between 1 and ${MAX_SUBAGENT_MAX_CONCURRENT}`);
   }
-  const stored = readStoredSettings(settingsPath);
   mkdirSync(dirname(settingsPath), { recursive: true });
-  writePrivateFileAtomicSync(settingsPath, JSON.stringify({
-    ...stored,
-    version: 1,
-    maxConcurrent,
-  }, null, 2));
-  return readSubagentSettings(settingsPath);
+  const release = lockfile.lockSync(settingsPath, { realpath: false });
+  try {
+    const stored = readStoredSettings(settingsPath);
+    writePrivateFileAtomicSync(settingsPath, JSON.stringify({
+      ...stored,
+      version: 1,
+      maxConcurrent,
+    }, null, 2));
+    return readSubagentSettings(settingsPath);
+  } finally { release(); }
 }
