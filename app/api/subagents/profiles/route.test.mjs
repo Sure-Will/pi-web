@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { createJiti } from "jiti";
+import { Script } from "node:vm";
+import ts from "typescript";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const testAgentDir = await mkdtemp(join(tmpdir(), "pi-web-subagent-route-global-"));
@@ -177,3 +179,65 @@ test("profiles route rejects missing paths, malformed profiles, and unsafe names
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "enabled required" });
 });
+
+
+// Execute the editor's actual projection before calling the real persistence API.
+const editorSource = ts.createSourceFile("AgentsConfig.tsx",
+  await readFile(new URL("../../../../components/AgentsConfig.tsx", import.meta.url), "utf8"),
+  ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const editorProjection = editorSource.statements.find((node) =>
+  ts.isFunctionDeclaration(node) && node.name?.text === "editableProfile");
+const editableProfile = new Script(ts.transpileModule(
+  `(${editorProjection.getText(editorSource)})`,
+  { compilerOptions: { target: ts.ScriptTarget.ESNext } },
+).outputText).runInNewContext();
+
+function assertExecutionSettings(actual, expected) {
+  for (const key of ["color", "isolation", "persistSession", "loadExtensions"]) {
+    assert.equal(actual[key], expected[key], key);
+  }
+  assert.deepEqual(Array.from(actual.extensionTools ?? []), expected.extensionTools);
+}
+
+for (const operation of ["edit and duplicate", "toggle"]) {
+  test(`profile ${operation} preserves isolation, persistence, color and extension selectors`, async (t) => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-web-profile-preservation-"));
+    allowFileRoot(cwd);
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+    for (const persistSession of [false, true]) {
+      const original = profile({ color: "blue", isolation: persistSession ? "off" : "worktree",
+        persistSession, extensionTools: ["ext:lookup_docs"], tools: ["read"] });
+      let response = await PUT(jsonRequest("PUT", { cwd, scope: "project", profile: original }));
+      assert.equal(response.status, 200);
+      const loaded = (await response.json()).profile;
+      assertExecutionSettings(loaded, original);
+      if (operation === "toggle") {
+        for (const enabled of [false, true]) {
+          response = await PATCH(jsonRequest("PATCH", { cwd, scope: "project", name: original.name, enabled }));
+          assert.equal(response.status, 200);
+          const toggled = (await response.json()).profile;
+          assert.equal(toggled.enabled, enabled);
+          assertExecutionSettings(toggled, original);
+        }
+      } else {
+        const draft = editableProfile(loaded);
+        assertExecutionSettings(draft, original);
+        assert.notEqual(draft.tools, loaded.tools);
+        assert.notEqual(draft.extensionTools, loaded.extensionTools);
+        assert.equal("scope" in draft, false);
+        assert.equal("filePath" in draft, false);
+        for (const name of [original.name, `${original.name}-copy`]) {
+          response = await PUT(jsonRequest("PUT", { cwd, scope: "project",
+            profile: { ...draft, name, description: "Edited in the UI" } }));
+          assert.equal(response.status, 200);
+          assertExecutionSettings((await response.json()).profile, original);
+        }
+      }
+      response = await GET(new Request(`http://localhost/api/subagents/profiles?cwd=${encodeURIComponent(cwd)}`));
+      assert.equal(response.status, 200);
+      for (const saved of (await response.json()).profiles.filter((p) => p.scope === "project")) {
+        assertExecutionSettings(saved, original);
+      }
+    }
+  });
+}
