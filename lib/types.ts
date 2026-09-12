@@ -296,6 +296,7 @@ export interface BranchPreview {
 
 export type SubagentSessionStatus =
   | "starting"
+  | "queued"
   | "running"
   | "completed"
   | "failed"
