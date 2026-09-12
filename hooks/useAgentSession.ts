@@ -1615,7 +1615,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         targetId: entryId,
       });
       if (result?.cancelled || sessionIdRef.current !== sid) return false;
-      await loadSession(sid);
+      await loadSession(sid, false, true);
       return sessionIdRef.current === sid;
     } catch (e) {
       console.error("Failed to navigate:", e);

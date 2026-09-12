@@ -53,7 +53,7 @@ function setup() {
   }
   context.setToolPresetState = () => {};
   const getState = async () => {
-    if (!deferState) return { model: model(serverModel), isStreaming: true };
+    if (!deferState) return { model: model(serverModel), isStreaming: true, thinkingLevel: context.runtimeThinking };
     requested.resolve();
     return response.promise;
   };
@@ -76,7 +76,7 @@ function setup() {
     return model(serverModel);
   };
   for (const name of ["syncLiveModel", "loadSession", "handleModelChange", "handleAgentEvent",
-    "reconcileAgentState", "loadSystemInfo", "handleToolPresetChange"]) {
+    "reconcileAgentState", "loadSystemInfo", "handleToolPresetChange", "handleNavigate"]) {
     context[name] = callback(name, context);
   }
   const display = () => (context.currentModelOverride ?? context.liveModel ?? context.data?.context.model)?.modelId;
@@ -133,4 +133,17 @@ test("a model switch with a lost acknowledgement recovers canonical server state
   assert.equal(h.display(), "B");
   assert.equal(h.context.modelSwitchPendingRef.current, false);
   assert.equal(h.context.modelSwitching, false);
+});
+
+
+test("editing an earlier turn keeps the runtime thinking level in the composer", async () => {
+  const h = setup();
+  h.release();
+  h.context.runtimeThinking = "xhigh";
+  h.context.setThinkingLevel("xhigh");
+  const send = h.context.sendAgentCommand;
+  h.context.sendAgentCommand = (sid, command) => command.type === "navigate_tree" ? Promise.resolve({}) : send(sid, command);
+  h.context.bashRunningRef = { current: false };
+  assert.equal(await h.context.handleNavigate("earlier-high-turn"), true);
+  assert.equal(h.context.thinkingLevel, "xhigh");
 });
